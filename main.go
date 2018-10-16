@@ -23,32 +23,44 @@ import (
 
 func main() {
 
-	var modePtr, hashPtr string
-	flag.StringVar(&modePtr, "mode", "z", "choosing program mode")
-	flag.StringVar(&hashPtr, "hash", "e594936d61b2c2857613ed81d88ba24acd153f7c", "fingerprint of certificate")
+	var mode, hash, pkey, cert, path, szp string
+	flag.StringVar(&mode, "mode", "z", "choosing program mode")
+	flag.StringVar(&hash, "hash", "", "fingerprint of certificate")
+	flag.StringVar(&cert, "cert", "my.crt", "path to certificate file")
+	flag.StringVar(&pkey, "pkey", "my.key", "path to private key file")
+	flag.StringVar(&path, "path", "mydir", "working directory")
+	flag.StringVar(&szp, "szp", "data.szp", "name of output szp file")
 
 	flag.Parse()
 
-	switch modePtr {
+	switch mode {
 	case "z":
-		files, err := getFileList("./mydir")
+		files, err := getFileList("./" + path)
 		if err != nil {
-			fmt.Printf("Error has occured: %s", err.Error())
+			fmt.Printf("Error has occured: %s\n", err.Error())
+			return
 		}
 
-		err = createSzp(files, "data.szp", "my.key", "my.crt")
+		err = createSzp(files, szp, pkey, cert)
 		if err != nil {
-			fmt.Printf("Error has occured: %s", err.Error())
+			fmt.Printf("Error has occured: %s\n", err.Error())
+			return
 		}
 	case "x":
-		err := extractSzp("data.szp", hashPtr)
+		if len(hash) != 40 {
+			fmt.Printf("Error has occured: %s\n", "Please, enter valid fingerprint")
+			return
+		}
+		err := extractSzp(szp, hash, path)
 		if err != nil {
-			fmt.Printf("Error has occured: %s", err.Error())
+			fmt.Printf("Error has occured: %s\n", err.Error())
+			return
 		}
 	case "i":
-		err := getMeta("data.szp")
+		err := getMeta(szp)
 		if err != nil {
 			fmt.Println(err)
+			return
 		}
 	default:
 		fmt.Println("Use -mode only with \"z\", \"x\", \"i\" flags")
@@ -242,7 +254,7 @@ func signFile(fileBytes []byte, keyPath, certPath string) ([]byte, error) {
 }
 
 //extracts signed zip package
-func extractSzp(filePath, fingerprint string) error {
+func extractSzp(filePath, fingerprint, dest string) error {
 	fileBytes, err := verifySzp(filePath, fingerprint)
 	if err != nil {
 		return err
@@ -259,7 +271,7 @@ func extractSzp(filePath, fingerprint string) error {
 		return err
 	}
 
-	err = unzipArchive(fileBytes[4+metaSize:], metas, "Temp")
+	err = unzipArchive(fileBytes[4+metaSize:], metas, dest)
 	if err != nil {
 		return err
 	}
@@ -285,8 +297,8 @@ func verifySzp(filePath, ShaCert string) (content []byte, err error) {
 	}
 
 	if ShaCert != fmt.Sprintf("%x", sha1.Sum(p7.Certificates[0].Raw)) {
-		fmt.Println(ShaCert)
-		fmt.Printf("%x\n", sha1.Sum(p7.Certificates[0].Raw))
+		//fmt.Println(ShaCert)
+		//fmt.Printf("%x\n", sha1.Sum(p7.Certificates[0].Raw))
 		return nil, errors.New("error has occured: invalid sha1")
 	}
 	fmt.Println("Certificate is correct")
