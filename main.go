@@ -46,7 +46,10 @@ func main() {
 			fmt.Printf("Error has occured: %s", err.Error())
 		}
 	case "i":
-
+		err := getMeta("data.szp")
+		if err != nil {
+			fmt.Println(err)
+		}
 	default:
 		fmt.Println("Use -mode only with \"z\", \"x\", \"i\" flags")
 	}
@@ -224,7 +227,6 @@ func signFile(fileBytes []byte, keyPath, certPath string) ([]byte, error) {
 		return nil, err
 	}
 
-	//h := sha1.New()
 	fmt.Printf("SHA1 fingerprint is %x\n", sha1.Sum(parsedCert.Raw))
 
 	if err := signedData.AddSigner(parsedCert, cert.PrivateKey, pkcs7.SignerInfoConfig{}); err != nil {
@@ -376,6 +378,42 @@ func checkSha(files []*zip.File, metas map[string]meta) (bool, error) {
 	}
 	fmt.Println("Files are valid")
 	return true, nil
+}
+
+//gets information about files from metadata file
+func getMeta(szpPath string) error {
+	fileBytes, err := ioutil.ReadFile(szpPath)
+	if err != nil {
+		return err
+	}
+
+	p7, err := pkcs7.Parse(fileBytes)
+	if err != nil {
+		return err
+	}
+
+	err = p7.Verify()
+	if err != nil {
+		return err
+	}
+
+	sizeBytes := p7.Content[0:4]
+	metaSize := binary.LittleEndian.Uint32(sizeBytes)
+
+	metas, err := unzipMeta(p7.Content[4:4+metaSize], metaSize)
+	if err != nil {
+		return err
+	}
+
+	for key, value := range metas {
+		fmt.Printf("Path: %s\n", key)
+		fmt.Printf("Size: %d\n", value.Size)
+		fmt.Printf("Modification time: %d-%02d-%02dT%02d:%02d:%02d-00:00\n",
+			value.ModTime.Year(), value.ModTime.Month(), value.ModTime.Day(),
+			value.ModTime.Hour(), value.ModTime.Minute(), value.ModTime.Second())
+		fmt.Printf("Hash: %s\n", value.Hash)
+	}
+	return nil
 }
 
 //struct to marshall information about files
