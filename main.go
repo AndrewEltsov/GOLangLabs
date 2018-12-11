@@ -7,12 +7,16 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/gocraft/web"
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var templates = template.Must(template.ParseGlob("templates/*.html"))
+
+var mutex = &sync.Mutex{}
 
 var cache = make(map[int]Document)
 
@@ -24,6 +28,11 @@ type Context struct {
 type Document struct {
 	Name string
 	Data []byte
+}
+
+type User struct {
+	Username       string `pq:"username"`
+	HashedPassword string `pq:"hashed_password"`
 }
 
 func (c *Context) renderHomePage(rw web.ResponseWriter, req *web.Request) {
@@ -40,11 +49,10 @@ func (c *Context) renderRegistrationPage(rw web.ResponseWriter, req *web.Request
 	}
 }
 
-func (c *Context) performRegistration(rw web.ResponseWriter, req *web.Request) {
-	req.ParseForm()
-	for key, value := range req.Form {
-		str := fmt.Sprintf("%s: %s\n", key, value[0])
-		fmt.Fprint(rw, str)
+func (c *Context) renderLoginPage(rw web.ResponseWriter, req *web.Request) {
+	err := templates.ExecuteTemplate(rw, "login.html", c)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 }
 
@@ -66,9 +74,19 @@ func (c *Context) getDocList(rw web.ResponseWriter, req *web.Request) {
 		names[id] = name
 	}
 
-	fmt.Println(names)
-
 	err = templates.ExecuteTemplate(rw, "list.html", names)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func renderDoc(rw web.ResponseWriter, title, data string) {
+	err := templates.ExecuteTemplate(rw, "doc.html", struct {
+		Title string
+		Data  string
+	}{
+		title,
+		data})
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
@@ -80,18 +98,12 @@ func (c *Context) getDoc(rw web.ResponseWriter, req *web.Request) {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 
-	type docContent struct {
-		Title string
-		Body  string
-	}
-	var doc docContent
-
+	mutex.Lock()
 	value, isCached := cache[id]
+	mutex.Unlock()
 
 	if isCached {
-		doc = docContent{value.Name,
-			string(value.Data)}
-
+		renderDoc(rw, value.Name, string(value.Data))
 	} else {
 		rows, err := c.dbPointer.Query(fmt.Sprintf("SELECT name, data FROM docs WHERE id=%d;", id))
 		if err != nil {
@@ -105,19 +117,17 @@ func (c *Context) getDoc(rw web.ResponseWriter, req *web.Request) {
 			if err := rows.Scan(&name, &data); err != nil {
 				http.Error(rw, err.Error(), http.StatusInternalServerError)
 			}
-			doc = docContent{name,
-				string(data)}
+
+			mutex.Lock()
 			cache[id] = Document{Name: name,
 				Data: data}
+			mutex.Unlock()
+
+			renderDoc(rw, name, string(data))
 		} else {
-			doc = docContent{"Такого документа не существует",
-				"Извините :("}
+			renderDoc(rw, "Такого документа не существует", "Извините :(")
 		}
 
-	}
-	err = templates.ExecuteTemplate(rw, "doc.html", doc)
-	if err != nil {
-		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 }
 
@@ -139,7 +149,7 @@ func (c *Context) sendDoc(rw web.ResponseWriter, req *web.Request) {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 
-	_, err = c.dbPointer.Exec(fmt.Sprintf("INSERT INTO docs(name, data) VALUES('%s', '\\x%x');", req.FormValue("file_name"), data))
+	_, err = c.dbPointer.Exec("INSERT INTO docs(name, data) VALUES($1, $2);", req.FormValue("file_name"), data)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
@@ -148,13 +158,50 @@ func (c *Context) sendDoc(rw web.ResponseWriter, req *web.Request) {
 
 }
 
+func (c *Context) signup(rw web.ResponseWriter, req *web.Request) {
+	err := req.ParseForm()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.PostFormValue("password")), 8)
+
+	_, err = c.dbPointer.Exec("insert into users(username, hashed_password) values($1, $2)", req.PostFormValue("username"), string(hashedPassword))
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (c *Context) signin(rw web.ResponseWriter, req *web.Request) {
+	err := req.ParseForm()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+
+	result := c.dbPointer.QueryRow("select hashed_password from users where username=$1", req.PostFormValue("username"))
+
+	var hash string
+	err = result.Scan(&hash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(rw, err.Error(), http.StatusUnauthorized)
+		}
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.PostFormValue("password")))
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusUnauthorized)
+	}
+}
+
 func main() {
 	connStr := "user=postgres_user password=pass dbname=docs_list sslmode=disable"
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		fmt.Println(err)
 	}
-	//defer db.Close()
+	defer db.Close()
 
 	c := Context{
 		dbPointer: db}
@@ -162,12 +209,14 @@ func main() {
 					Middleware(web.LoggerMiddleware).     // Use some included middleware
 					Middleware(web.ShowErrorsMiddleware). // ...
 					Get("/", (*Context).renderHomePage).  // Add a route
-		/* Get("/register", (*Context).renderRegistrationPage).
-		Post("/register", (*Context).performRegistration) */
-		Get("/docs", c.getDocList).
-		Get("/docs/:id", c.getDoc).
-		Get("/send", c.sendDocForm).
-		Post("/send", c.sendDoc)
+					Get("/docs", c.getDocList).
+					Get("/docs/:id", c.getDoc).
+					Get("/send", c.sendDocForm).
+					Post("/send", c.sendDoc).
+					Get("/register", c.renderRegistrationPage).
+					Post("/signup", c.signup).
+					Get("/login", c.renderLoginPage).
+					Post("/signin", c.signin)
 
 	http.ListenAndServe("localhost:8080", rootRouter) // Start the server!
 }
