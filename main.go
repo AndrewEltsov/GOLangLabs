@@ -105,30 +105,47 @@ func (c *Context) getDoc(rw web.ResponseWriter, req *web.Request) {
 	if isCached {
 		renderDoc(rw, value.Name, string(value.Data))
 	} else {
-		rows, err := c.dbPointer.Query(fmt.Sprintf("SELECT name, data FROM docs WHERE id=%d;", id))
+		result := c.dbPointer.QueryRow("SELECT name, data FROM docs WHERE id=$1;", id)
+
+		var name string
+		var data []byte
+		err = result.Scan(&name, &data)
 		if err != nil {
+			if err == sql.ErrNoRows {
+				renderDoc(rw, "Такого документа не существует", "Извините :(")
+			}
 			http.Error(rw, err.Error(), http.StatusInternalServerError)
 		}
-		defer rows.Close()
+		mutex.Lock()
+		cache[id] = Document{Name: name,
+			Data: data}
+		mutex.Unlock()
 
-		if rows.Next() {
-			var name string
-			var data []byte
-			if err := rows.Scan(&name, &data); err != nil {
-				http.Error(rw, err.Error(), http.StatusInternalServerError)
-			}
-
-			mutex.Lock()
-			cache[id] = Document{Name: name,
-				Data: data}
-			mutex.Unlock()
-
-			renderDoc(rw, name, string(data))
-		} else {
-			renderDoc(rw, "Такого документа не существует", "Извините :(")
-		}
-
+		renderDoc(rw, name, string(data))
 	}
+}
+
+func (c *Context) deleteDoc(rw web.ResponseWriter, req *web.Request) {
+	id, err := strconv.Atoi(req.PathParams["id"])
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+
+	mutex.Lock()
+	_, isCached := cache[id]
+	mutex.Unlock()
+
+	if isCached {
+		mutex.Lock()
+		delete(cache, id)
+		mutex.Unlock()
+	}
+
+	_, err = c.dbPointer.Exec("DELETE FROM docs WHERE id=$1;", id)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+	http.Redirect(rw, req.Request, "/docs", http.StatusTemporaryRedirect)
 }
 
 func (c *Context) sendDocForm(rw web.ResponseWriter, req *web.Request) {
@@ -155,7 +172,6 @@ func (c *Context) sendDoc(rw web.ResponseWriter, req *web.Request) {
 	}
 
 	http.Redirect(rw, req.Request, "/docs", http.StatusTemporaryRedirect)
-
 }
 
 func (c *Context) signup(rw web.ResponseWriter, req *web.Request) {
@@ -213,6 +229,7 @@ func main() {
 					Get("/docs/:id", c.getDoc).
 					Get("/send", c.sendDocForm).
 					Post("/send", c.sendDoc).
+					Get("/delete/:id", c.deleteDoc).
 					Get("/register", c.renderRegistrationPage).
 					Post("/signup", c.signup).
 					Get("/login", c.renderLoginPage).
