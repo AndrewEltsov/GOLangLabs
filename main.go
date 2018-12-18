@@ -5,22 +5,25 @@ import (
 	"fmt"
 	"html/template"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gocraft/web"
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
 
 var templates = template.Must(template.ParseGlob("templates/*.html"))
 
-var mutex = &sync.Mutex{}
+var mutex sync.RWMutex
 
-var cache = make(map[int]Document)
+var cache = make(map[int]*Document)
 
-//Context is temporary empty structure
+//Context
 type Context struct {
 	dbPointer *sql.DB
 }
@@ -36,10 +39,8 @@ type User struct {
 }
 
 func (c *Context) renderHomePage(rw web.ResponseWriter, req *web.Request) {
-	err := templates.ExecuteTemplate(rw, "home.html", c)
-	if err != nil {
-		http.Error(rw, err.Error(), http.StatusInternalServerError)
-	}
+	rw.Header().Set("Location", "/docs")
+	rw.WriteHeader(http.StatusTemporaryRedirect)
 }
 
 func (c *Context) renderRegistrationPage(rw web.ResponseWriter, req *web.Request) {
@@ -57,7 +58,6 @@ func (c *Context) renderLoginPage(rw web.ResponseWriter, req *web.Request) {
 }
 
 func (c *Context) getDocList(rw web.ResponseWriter, req *web.Request) {
-
 	rows, err := c.dbPointer.Query("SELECT id, name FROM docs;")
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -65,7 +65,7 @@ func (c *Context) getDocList(rw web.ResponseWriter, req *web.Request) {
 	defer rows.Close()
 
 	names := make(map[int]string)
-	for i := 0; rows.Next(); i++ {
+	for rows.Next() { //
 		var id int
 		var name string
 		if err := rows.Scan(&id, &name); err != nil {
@@ -98,9 +98,9 @@ func (c *Context) getDoc(rw web.ResponseWriter, req *web.Request) {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 
-	mutex.Lock()
+	mutex.RLock()
 	value, isCached := cache[id]
-	mutex.Unlock()
+	mutex.RUnlock()
 
 	if isCached {
 		renderDoc(rw, value.Name, string(value.Data))
@@ -117,7 +117,7 @@ func (c *Context) getDoc(rw web.ResponseWriter, req *web.Request) {
 			http.Error(rw, err.Error(), http.StatusInternalServerError)
 		}
 		mutex.Lock()
-		cache[id] = Document{Name: name,
+		cache[id] = &Document{Name: name,
 			Data: data}
 		mutex.Unlock()
 
@@ -131,9 +131,9 @@ func (c *Context) deleteDoc(rw web.ResponseWriter, req *web.Request) {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 
-	mutex.Lock()
+	mutex.RLock()
 	_, isCached := cache[id]
-	mutex.Unlock()
+	mutex.RUnlock()
 
 	if isCached {
 		mutex.Lock()
@@ -160,6 +160,7 @@ func (c *Context) sendDoc(rw web.ResponseWriter, req *web.Request) {
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
+	defer file.Close()
 
 	data, err := ioutil.ReadAll(file)
 	if err != nil {
@@ -171,7 +172,8 @@ func (c *Context) sendDoc(rw web.ResponseWriter, req *web.Request) {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 
-	http.Redirect(rw, req.Request, "/docs", http.StatusTemporaryRedirect)
+	rw.Header().Set("Location", "/docs")
+	rw.WriteHeader(http.StatusMovedPermanently)
 }
 
 func (c *Context) signup(rw web.ResponseWriter, req *web.Request) {
@@ -186,6 +188,9 @@ func (c *Context) signup(rw web.ResponseWriter, req *web.Request) {
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
+
+	rw.Header().Set("Location", "/login")
+	rw.WriteHeader(http.StatusTemporaryRedirect)
 }
 
 func (c *Context) signin(rw web.ResponseWriter, req *web.Request) {
@@ -194,10 +199,11 @@ func (c *Context) signin(rw web.ResponseWriter, req *web.Request) {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 
-	result := c.dbPointer.QueryRow("select hashed_password from users where username=$1", req.PostFormValue("username"))
+	result := c.dbPointer.QueryRow("select id, hashed_password from users where username=$1", req.PostFormValue("username"))
 
 	var hash string
-	err = result.Scan(&hash)
+	var id int
+	err = result.Scan(&id, &hash)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(rw, err.Error(), http.StatusUnauthorized)
@@ -209,6 +215,80 @@ func (c *Context) signin(rw web.ResponseWriter, req *web.Request) {
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusUnauthorized)
 	}
+
+	token := uuid.New()
+	log.Println(token.String())
+	_, err = c.dbPointer.Exec("INSERT INTO sessions(token, user_id, time) VALUES($1, $2, $3);", token.String(), id, time.Now())
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+
+	http.SetCookie(rw, &http.Cookie{Name: "token", Value: token.String()})
+	rw.Header().Set("Location", "/docs")
+	rw.WriteHeader(http.StatusFound)
+}
+
+func (c *Context) signout(rw web.ResponseWriter, req *web.Request) {
+	token, _ := req.Cookie("token")
+	http.SetCookie(rw, &http.Cookie{Name: "token", Value: ""})
+
+	_, err := c.dbPointer.Exec("DELETE FROM sessions WHERE token=$1;", token.Value)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+	}
+
+	rw.Header().Set("Location", "/login")
+	rw.WriteHeader(http.StatusFound)
+}
+
+func (c *Context) checkAuth(rw web.ResponseWriter, r *web.Request, next web.NextMiddlewareFunc) {
+	log.Println("checkAuth")
+	log.Println(r.Request.URL.String())
+	if r.RequestURI != "/login" && r.RequestURI != "/signin" && r.RequestURI != "/register" && r.RequestURI != "/signup" && r.RequestURI != "/favicon.ico" {
+		log.Println("checkAuth for requests")
+		var token, err = r.Request.Cookie("token")
+		if err != nil || token.Value == "" {
+			log.Println("token not found")
+			rw.Header().Set("Location", "/login")
+			rw.WriteHeader(http.StatusFound)
+		} else {
+			log.Println("token found")
+			if c.getSession(token.Value) {
+				next(rw, r)
+			} else {
+				http.SetCookie(rw, &http.Cookie{Name: "token", Value: ""})
+				rw.Header().Set("Location", "/login")
+				rw.WriteHeader(http.StatusFound)
+			}
+		}
+	} else {
+		next(rw, r)
+	}
+}
+
+func (c *Context) getSession(token string) bool {
+	log.Println(token)
+	result := c.dbPointer.QueryRow("SELECT time FROM sessions WHERE token=$1;", token)
+
+	var sessionTime time.Time
+
+	err := result.Scan(&sessionTime)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Println("No session")
+			return false
+		}
+		log.Println(err.Error())
+		return false
+	}
+
+	if time.Since(sessionTime) > time.Hour {
+		log.Println("Session outdated")
+		_, err = c.dbPointer.Exec("DELETE FROM sessions WHERE token=$1;", token)
+		return false
+	}
+
+	return true
 }
 
 func main() {
@@ -222,18 +302,21 @@ func main() {
 	c := Context{
 		dbPointer: db}
 	rootRouter := web.New(c). // Create your router
+
 					Middleware(web.LoggerMiddleware).     // Use some included middleware
 					Middleware(web.ShowErrorsMiddleware). // ...
-					Get("/", (*Context).renderHomePage).  // Add a route
+					Middleware(c.checkAuth).
+					Get("/", c.renderHomePage).
+					Get("/login", c.renderLoginPage).
+					Post("/signin", c.signin).
 					Get("/docs", c.getDocList).
 					Get("/docs/:id", c.getDoc).
 					Get("/send", c.sendDocForm).
 					Post("/send", c.sendDoc).
 					Get("/delete/:id", c.deleteDoc).
+					Post("/signout", c.signout).
 					Get("/register", c.renderRegistrationPage).
-					Post("/signup", c.signup).
-					Get("/login", c.renderLoginPage).
-					Post("/signin", c.signin)
+					Post("/signup", c.signup)
 
-	http.ListenAndServe("localhost:8080", rootRouter) // Start the server!
+	panic(http.ListenAndServe("localhost:8080", rootRouter)) // Start the server
 }

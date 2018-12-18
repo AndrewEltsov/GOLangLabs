@@ -1,16 +1,100 @@
 <!DOCTYPE html>
 <html>
- <head>
-  <meta charset="utf-8">
-  <title>Documents list</title>
- </head>
- <body>
-    <ul>
-        {{range $key, $value := .}}
-            <li ><a href="/docs/{{$key}}">{{$value}}</a></li>
-        {{else}}
-            <p>No files</p>
-        {{end}}
-    </ul>
- </body>
+  <head>
+    <title>Documents list</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.11.0/umd/popper.min.js" integrity="sha384-b/U6ypiBEHpOf/4+1nzFpr53nxSS+GLCkfwBdFNTxtclqqenISfwAzpKaMNFNmj4" crossorigin="anonymous"></script> 
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.min.js" integrity="sha384-JZR6Spejh4U02d8jOt6vLEHfe/JQGiRRSQQxSfFWpi1MquVdAyjUar5+76PVCmYl" crossorigin="anonymous"></script>   
+  </head>
+  <body>
+    <header>
+        <nav class="navbar navbar-expand-lg navbar-light bg-light">
+            <a class="navbar-brand" href="/">Docs list</a>
+            <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNavAltMarkup" aria-controls="navbarNavAltMarkup" aria-expanded="false" aria-label="Toggle navigation">
+              <span class="navbar-toggler-icon"></span>
+            </button>  
+            <div class="collapse navbar-collapse" id="navbarNavAltMarkup">
+              <div class="navbar-nav">
+                  <a class="nav-item nav-link" href="/docs">Main Page</a>
+                  <a class="nav-item nav-link" href="/send">Send file</a>  
+                  <a class="nav-item nav-link" id="logout" href="">Log out</a> 
+              </div>
+            </div>
+          </nav>
+        
+          
+    </header>
+    <section class = "container" id="mainSection">    
+            <h2>Files</h2>
+            <hr>
+            <ul class="list-group">
+                    {{range $key, $value := .}}
+                        <li class="list-group-item" >              
+                                <div class="btn-group btn-group-sm" style="float: right;">
+                                        <button type="button" class="btn btn-danger" onclick="location.href = '/delete/{{$key}}';"><i class="fa fa-times-circle"></i></button>
+                                </div>  
+                            <p>
+                                <a href="/docs/{{$key}}">{{$value}}</a>
+                            </p> 
+                        </li>
+                    {{else}}
+                        <p>No files</p>
+                    {{end}}
+             </ul>
+    </section>
+    <br>
+    <footer class="footer">
+      <div class="container">
+        <span class="text-muted">Автор: Ельцов Андрей, ИТД.Б-52</span>
+      </div>
+    </footer>
+
+    <style>
+      html {
+        position: relative;
+        min-height: 100%;
+      }
+      body {
+        margin-bottom: 60px; /* Margin bottom by footer height */
+      }
+      .footer {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        height: 60px; /* Set the fixed height of the footer here */
+        line-height: 60px; /* Vertically center the text there */
+        background-color: #f5f5f5;
+      }
+
+
+      /* Custom page CSS
+      -------------------------------------------------- */
+      /* Not required for template or sticky footer method. */
+
+      .container {
+        width: auto;
+        max-width: 1000px;
+        padding: 0 15px;
+      }
+    </style>
+
+<script>
+    $(document.getElementById('logout')).on('click', function() {
+      var form = $(this);
+      $.ajax({
+          url: "/signout",
+          method: "POST",
+          success: function (result) {
+              window.location.href='/'
+          },
+          error: function(res){
+              alert('error');
+          }
+        });
+        return false; 
+  });
+    </script>
+  </body>
 </html>
